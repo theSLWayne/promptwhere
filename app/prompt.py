@@ -37,4 +37,28 @@ class Prompt:
         self.llm_result = llm_result
         self.nickname = nickname
 
-        
+
+class SytemPrompt(Prompt):
+    def __init__(self, 
+                 version: str, 
+                 datetime: str, 
+                 prompt_text: str, 
+                 description: str, 
+                 model: str, 
+                 inputs: str | None = None, 
+                 llm_result: str | None = None, 
+                 nickname: str | None = None) -> None:
+        super().__init__(version, datetime, prompt_text, description, model, inputs, llm_result, nickname)
+
+
+class UserPrompt(Prompt):
+    def __init__(self, 
+                 version: str, 
+                 datetime: str, 
+                 prompt_text: str, 
+                 description: str, 
+                 model: str, 
+                 inputs: str | None = None, 
+                 llm_result: str | None = None, 
+                 nickname: str | None = None) -> None:
+        super().__init__(version, datetime, prompt_text, description, model, inputs, llm_result, nickname)
