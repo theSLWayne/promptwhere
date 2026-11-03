@@ -101,6 +101,31 @@ label at a version that doesn't exist raises `VersionNotFound`. Labels live in
 `_labels.yaml` next to the versions. Like `version`, a template variable called
 `label` can't be passed to `store.render`; use `store.get(...).render(...)`.
 
+### Diffs
+
+```python
+print(store.diff("chatbot", 1, 2))  # unified diff, empty if the texts are identical
+```
+
+## Command line
+
+Installing the package adds a `prompts` command. It is a thin layer over the
+API above and works on `./prompts` (use `--path DIR` before the command to pick
+another store).
+
+```bash
+prompts list
+prompts show chatbot [--version 2 | --label production]
+prompts history chatbot
+prompts edit chatbot [-m "message"]   # opens the latest version in $VISUAL / $EDITOR
+prompts diff chatbot 2 3
+prompts label chatbot production 3
+```
+
+`edit` saves the result as the next version. If the text is unchanged or empty
+after the editor closes, nothing is saved. Errors print as `error: …` and exit
+with code 1.
+
 ## Rules
 
 - **Names** use lowercase letters, digits, `-` and `_`, and start with a letter or
@@ -167,8 +192,7 @@ conflict. This is documented, not solved.
 
 ## Status
 
-Under development. Not yet available: optional
-Jinja2 templates and the `prompts` command line tool.
+Under development. Not yet available: optional Jinja2 templates.
 
 ## Development
 

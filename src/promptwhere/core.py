@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -169,3 +170,33 @@ class PromptWhere:
         """
         validate_name(name)
         return self._backend.get_labels(name)
+
+    def diff(self, name: str, a: int, b: int) -> str:
+        """Return a unified diff between versions ``a`` and ``b`` of a prompt.
+
+        Args:
+            name: Prompt name.
+            a: The older version number.
+            b: The newer version number.
+
+        Returns:
+            The unified diff text, or an empty string if the templates are identical.
+
+        Raises:
+            InvalidPromptName: If ``name`` is not valid.
+            PromptNotFound: If the prompt does not exist.
+            VersionNotFound: If ``a`` or ``b`` does not exist.
+        """
+        validate_name(name)
+        old = self._backend.get_version(name, a).template
+        new = self._backend.get_version(name, b).template
+        lines = difflib.unified_diff(
+            old.splitlines(keepends=True),
+            new.splitlines(keepends=True),
+            fromfile=f"{name} v{a}",
+            tofile=f"{name} v{b}",
+        )
+        return "".join(
+            line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+            for line in lines
+        )

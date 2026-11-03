@@ -187,7 +187,11 @@ One base exception plus a few specific ones, all with helpful messages:
 
 Installed as a `prompts` command. Thin layer over the public API; no logic of its own.
 
+A global `--path DIR` option (before the command, default `./prompts`) selects
+the store folder, mirroring `PromptWhere(path=...)`.
+
 ```
+prompts [--path DIR] <command>
 prompts list
 prompts show chatbot [--version 2 | --label production]
 prompts history chatbot
