@@ -78,6 +78,23 @@ class PromptWhere:
             record = self._backend.get_version(name, version)
         return Prompt.from_record(name, record)
 
+    def render(self, name: str, /, version: int | None = None, **variables: Any) -> str:
+        """Fetch a prompt (the latest by default) and fill in its variables.
+
+        Args:
+            name: Prompt name (positional-only, so a ``{name}`` variable still works).
+            version: Version to render; the latest if omitted. A template variable
+                called ``version`` can't be passed here; use ``get(...).render(...)``.
+            **variables: Values for the ``{variables}`` in the template.
+
+        Raises:
+            InvalidPromptName: If ``name`` is not valid.
+            PromptNotFound: If the prompt does not exist.
+            VersionNotFound: If ``version`` does not exist.
+            MissingVariables: If the template uses a variable that was not provided.
+        """
+        return self.get(name, version).render(**variables)
+
     def history(self, name: str) -> list[Prompt]:
         """Return all versions of a prompt, oldest first.
 

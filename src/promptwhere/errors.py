@@ -32,6 +32,20 @@ class PromptNotFound(PromptWhereError):
         self.suggestions = suggestions or []
 
 
+class MissingVariables(PromptWhereError):
+    """A template variable was not provided at render time."""
+
+    def __init__(self, name: str, missing: list[str]) -> None:
+        listed = ", ".join(missing)
+        example = ", ".join(f"{m}=..." for m in missing)
+        super().__init__(
+            f"Prompt {name!r} needs variables that were not provided: {listed}. "
+            f"Pass them as keyword arguments, e.g. render({name!r}, {example})."
+        )
+        self.name = name
+        self.missing = missing
+
+
 class VersionExists(PromptWhereError):
     """A version file already exists; saved versions are never overwritten."""
 

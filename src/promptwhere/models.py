@@ -8,7 +8,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from .errors import InvalidPromptName
+from .errors import InvalidPromptName, MissingVariables
+from .templating import find_variables, render_template
 
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
@@ -53,6 +54,22 @@ class Prompt:
 
     def __str__(self) -> str:
         return self.template
+
+    @property
+    def variables(self) -> list[str]:
+        """Names of the ``{variables}`` in the template, in order of first use."""
+        return find_variables(self.template)
+
+    def render(self, **variables: Any) -> str:
+        """Fill in the template variables. Extra variables are ignored.
+
+        Raises:
+            MissingVariables: If the template uses a variable that was not provided.
+        """
+        text, missing = render_template(self.template, variables)
+        if missing:
+            raise MissingVariables(self.name, missing)
+        return text
 
     @classmethod
     def from_record(cls, name: str, record: VersionRecord) -> Prompt:

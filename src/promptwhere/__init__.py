@@ -4,6 +4,7 @@ from .core import PromptWhere
 from .errors import (
     InvalidPromptName,
     LockTimeout,
+    MissingVariables,
     PromptNotFound,
     PromptWhereError,
     VersionExists,
@@ -14,6 +15,7 @@ from .models import Prompt
 __all__ = [
     "InvalidPromptName",
     "LockTimeout",
+    "MissingVariables",
     "Prompt",
     "PromptNotFound",
     "PromptWhere",
