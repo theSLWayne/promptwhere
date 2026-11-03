@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "promptwhere"
+version = "0.1.0"
+description = "A basic, easy-to-use library for managing named, versioned prompts."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6"]
+
+[project.optional-dependencies]
+jinja = ["Jinja2>=3"]
+dev = ["pytest", "ruff", "mypy", "types-PyYAML"]
+
+[project.scripts]
+prompts = "promptwhere.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+strict = true
