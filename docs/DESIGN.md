@@ -100,8 +100,13 @@ template: |
 - The store folder is created automatically if it does not exist.
 - **Writes are atomic:** write to a temp file in the same folder, then rename.
 - Saving refuses to overwrite an existing version file.
-- Use a simple lock file per prompt when assigning the next version number,
-  so two processes saving at once cannot both create the same version.
+- Use a simple lock file (`_lock`, created exclusively) per prompt when assigning
+  the next version number, so two processes saving at once cannot both create the
+  same version. If the lock cannot be acquired within a timeout, raise
+  `LockTimeout` explaining how to remove a stale lock file.
+- `save_version` raises `VersionExists` rather than overwrite an existing version
+  file (the file is published with an atomic no-overwrite link, not a plain rename).
+- A prompt folder with no version files is not a prompt (it is ignored by `list`).
 
 ### Backend interface
 
@@ -109,6 +114,7 @@ All storage goes through one small interface. The public API never touches
 files directly.
 
 ```
+lock(name) -> context manager   # exclusive per-prompt lock; held while assigning a version
 save_version(name, version_record)
 get_version(name, version) -> VersionRecord
 list_versions(name) -> list[VersionRecord]
@@ -162,6 +168,7 @@ One base exception plus a few specific ones, all with helpful messages:
 - `PromptNotFound`: include a "did you mean …?" suggestion (`difflib.get_close_matches`).
 - `VersionNotFound`, `LabelNotFound`
 - `InvalidPromptName`
+- `VersionExists`, `LockTimeout`: storage safety errors (see Storage).
 - `MissingVariables`: list exactly which variables were not provided.
 
 ---

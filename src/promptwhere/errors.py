@@ -32,6 +32,30 @@ class PromptNotFound(PromptWhereError):
         self.suggestions = suggestions or []
 
 
+class VersionExists(PromptWhereError):
+    """A version file already exists; saved versions are never overwritten."""
+
+    def __init__(self, name: str, version: int) -> None:
+        super().__init__(
+            f"Version {version} of prompt {name!r} already exists and versions are immutable. "
+            "Save the text again to create the next version."
+        )
+        self.name = name
+        self.version = version
+
+
+class LockTimeout(PromptWhereError):
+    """The per-prompt lock could not be acquired in time."""
+
+    def __init__(self, name: str, path: str) -> None:
+        super().__init__(
+            f"Timed out waiting for the lock on prompt {name!r}. Another process may be saving it. "
+            f"If no other process is running, a crashed save left {path!r} behind: delete it and retry."
+        )
+        self.name = name
+        self.path = path
+
+
 class VersionNotFound(PromptWhereError):
     """The prompt exists but has no such version."""
 

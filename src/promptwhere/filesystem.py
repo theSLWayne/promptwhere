@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import difflib
+import os
 import re
+import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .errors import InvalidPromptName, PromptNotFound, VersionNotFound
+from .errors import InvalidPromptName, LockTimeout, PromptNotFound, VersionExists, VersionNotFound
 from .models import VersionRecord, validate_name
 
 _VERSION_FILE_RE = re.compile(r"v(\d+)\.yaml")
+_LOCK_FILE = "_lock"
+_LOCK_POLL = 0.02
+LOCK_TIMEOUT = 10.0  # seconds to wait for another process before giving up
 
 
 class _Dumper(yaml.SafeDumper):
@@ -54,7 +62,7 @@ class FileSystemBackend:
 
     def _require_prompt(self, name: str) -> Path:
         directory = self._prompt_dir(name)
-        if not directory.is_dir():
+        if not directory.is_dir() or not self._version_numbers(directory):
             matches = difflib.get_close_matches(name, self.list_prompts(), n=3)
             raise PromptNotFound(name, matches)
         return directory
@@ -67,9 +75,32 @@ class FileSystemBackend:
                 numbers.append(int(match.group(1)))
         return sorted(numbers)
 
+    @contextmanager
+    def lock(self, name: str) -> Iterator[None]:
+        directory = self._prompt_dir(name)
+        directory.mkdir(parents=True, exist_ok=True)
+        lock_path = directory / _LOCK_FILE
+        deadline = time.monotonic() + LOCK_TIMEOUT
+        while True:
+            try:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    raise LockTimeout(name, str(lock_path)) from None
+                time.sleep(_LOCK_POLL)
+        os.close(fd)
+        try:
+            yield
+        finally:
+            lock_path.unlink(missing_ok=True)
+
     def save_version(self, name: str, record: VersionRecord) -> None:
         directory = self._prompt_dir(name)
         directory.mkdir(parents=True, exist_ok=True)
+        target = self._version_path(name, record.version)
+        if target.exists():
+            raise VersionExists(name, record.version)
         data = {
             "version": record.version,
             "created_at": _format_time(record.created_at),
@@ -79,7 +110,30 @@ class FileSystemBackend:
             "template": record.template,
         }
         text = yaml.dump(data, Dumper=_Dumper, sort_keys=False, allow_unicode=True)
-        self._version_path(name, record.version).write_text(text, encoding="utf-8")
+        self._write_new(name, target, text)
+
+    @staticmethod
+    def _write_new(name: str, target: Path, text: str) -> None:
+        """Write ``text`` to a temp file next to ``target``, then publish it atomically."""
+        fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                # A hard link fails if the target exists, so it can never overwrite.
+                os.link(tmp, target)
+            except FileExistsError:
+                raise VersionExists(name, int(target.stem[1:])) from None
+            except OSError:
+                # Filesystem without hard links: rename, safe because the caller holds the lock.
+                if target.exists():
+                    raise VersionExists(name, int(target.stem[1:])) from None
+                os.replace(tmp, target)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def get_version(self, name: str, version: int) -> VersionRecord:
         directory = self._require_prompt(name)
@@ -95,8 +149,8 @@ class FileSystemBackend:
     def list_prompts(self) -> list[str]:
         names = []
         for path in self.root.iterdir():
-            if not path.is_dir():
-                continue
+            if not path.is_dir() or not self._version_numbers(path):
+                continue  # not a folder, or a folder with no saved versions
             try:
                 names.append(validate_name(path.name))
             except InvalidPromptName:

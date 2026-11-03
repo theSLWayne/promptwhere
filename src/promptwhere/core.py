@@ -38,23 +38,29 @@ class PromptWhere:
             metadata: Optional free-form details (model, temperature, ...).
 
         Returns:
-            The saved ``Prompt``.
+            The saved ``Prompt``, or the latest existing one if ``text`` is
+            unchanged (nothing is saved then).
 
         Raises:
             InvalidPromptName: If ``name`` is not valid.
+            LockTimeout: If another process holds the prompt's lock too long.
         """
         validate_name(name)
-        existing = name in self._backend.list_prompts()
-        latest = self._backend.list_versions(name)[-1].version if existing else 0
-        record = VersionRecord(
-            version=latest + 1,
-            template=text,
-            created_at=datetime.now(timezone.utc),
-            content_hash=hash_template(text),
-            message=message,
-            metadata=dict(metadata or {}),
-        )
-        self._backend.save_version(name, record)
+        content_hash = hash_template(text)
+        with self._backend.lock(name):
+            existing = name in self._backend.list_prompts()
+            latest = self._backend.list_versions(name)[-1] if existing else None
+            if latest is not None and latest.content_hash == content_hash:
+                return Prompt.from_record(name, latest)
+            record = VersionRecord(
+                version=latest.version + 1 if latest else 1,
+                template=text,
+                created_at=datetime.now(timezone.utc),
+                content_hash=content_hash,
+                message=message,
+                metadata=dict(metadata or {}),
+            )
+            self._backend.save_version(name, record)
         return Prompt.from_record(name, record)
 
     def get(self, name: str, version: int | None = None) -> Prompt:
