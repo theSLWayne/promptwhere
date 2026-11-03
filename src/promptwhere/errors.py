@@ -78,3 +78,16 @@ class VersionNotFound(PromptWhereError):
         super().__init__(f"Prompt {name!r} has no version {version}. Available versions: {shown}.")
         self.name = name
         self.version = version
+
+
+class LabelNotFound(PromptWhereError):
+    """The prompt has no label with that name."""
+
+    def __init__(self, name: str, label: str, available: list[str]) -> None:
+        shown = ", ".join(repr(a) for a in available) or "none"
+        super().__init__(
+            f"Prompt {name!r} has no label {label!r}. Existing labels: {shown}. "
+            f"Create it with set_label({name!r}, {label!r}, version)."
+        )
+        self.name = name
+        self.label = label

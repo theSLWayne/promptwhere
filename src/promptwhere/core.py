@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .backend import Backend
+from .errors import LabelNotFound
 from .filesystem import FileSystemBackend
 from .models import Prompt, VersionRecord, hash_template, validate_name
 
@@ -63,37 +64,65 @@ class PromptWhere:
             self._backend.save_version(name, record)
         return Prompt.from_record(name, record)
 
-    def get(self, name: str, version: int | None = None) -> Prompt:
+    def get(self, name: str, version: int | None = None, label: str | None = None) -> Prompt:
         """Return a version of a prompt, the latest by default.
 
+        Args:
+            name: Prompt name.
+            version: A version number. Mutually exclusive with ``label``.
+            label: A label such as ``"production"``. Mutually exclusive with ``version``.
+
         Raises:
+            ValueError: If both ``version`` and ``label`` are given.
             InvalidPromptName: If ``name`` is not valid.
             PromptNotFound: If the prompt does not exist.
             VersionNotFound: If ``version`` does not exist.
+            LabelNotFound: If ``label`` does not exist.
         """
         validate_name(name)
+        if version is not None and label is not None:
+            raise ValueError(
+                "Pass either version or label to get(), not both. "
+                "Drop one of them, e.g. get(name, version=2) or get(name, label='production')."
+            )
+        if label is not None:
+            labels = self._backend.get_labels(name)
+            if label not in labels:
+                raise LabelNotFound(name, label, sorted(labels))
+            version = labels[label]
         if version is None:
             record = self._backend.list_versions(name)[-1]
         else:
             record = self._backend.get_version(name, version)
         return Prompt.from_record(name, record)
 
-    def render(self, name: str, /, version: int | None = None, **variables: Any) -> str:
+    def render(
+        self,
+        name: str,
+        /,
+        version: int | None = None,
+        label: str | None = None,
+        **variables: Any,
+    ) -> str:
         """Fetch a prompt (the latest by default) and fill in its variables.
 
         Args:
             name: Prompt name (positional-only, so a ``{name}`` variable still works).
             version: Version to render; the latest if omitted. A template variable
-                called ``version`` can't be passed here; use ``get(...).render(...)``.
+                called ``version`` or ``label`` can't be passed here; use
+                ``get(...).render(...)``.
+            label: Label to render instead of a version (not both).
             **variables: Values for the ``{variables}`` in the template.
 
         Raises:
+            ValueError: If both ``version`` and ``label`` are given.
             InvalidPromptName: If ``name`` is not valid.
             PromptNotFound: If the prompt does not exist.
             VersionNotFound: If ``version`` does not exist.
+            LabelNotFound: If ``label`` does not exist.
             MissingVariables: If the template uses a variable that was not provided.
         """
-        return self.get(name, version).render(**variables)
+        return self.get(name, version, label).render(**variables)
 
     def history(self, name: str) -> list[Prompt]:
         """Return all versions of a prompt, oldest first.
@@ -108,3 +137,35 @@ class PromptWhere:
     def list(self) -> list[str]:
         """Return the names of all prompts in the store."""
         return self._backend.list_prompts()
+
+    def set_label(self, name: str, label: str, version: int) -> None:
+        """Point ``label`` at ``version``, creating or moving it. No version changes.
+
+        Args:
+            name: Prompt name.
+            label: Label such as ``"production"``.
+            version: The version it should point to.
+
+        Raises:
+            ValueError: If ``label`` is empty.
+            InvalidPromptName: If ``name`` is not valid.
+            PromptNotFound: If the prompt does not exist.
+            VersionNotFound: If ``version`` does not exist.
+            LockTimeout: If another process holds the prompt's lock too long.
+        """
+        validate_name(name)
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError("A label must be a non-empty string, e.g. 'production'.")
+        self._backend.get_version(name, version)  # raises if the prompt or version is missing
+        with self._backend.lock(name):
+            self._backend.set_label(name, label, version)
+
+    def labels(self, name: str) -> dict[str, int]:
+        """Return the current labels of a prompt as ``{label: version}``.
+
+        Raises:
+            InvalidPromptName: If ``name`` is not valid.
+            PromptNotFound: If the prompt does not exist.
+        """
+        validate_name(name)
+        return self._backend.get_labels(name)

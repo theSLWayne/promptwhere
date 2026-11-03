@@ -78,6 +78,29 @@ prompt.render(name="Ada", company="Acme")  # same as store.render(...)
   variable called `version` can't be passed to `store.render`; use
   `store.get("p").render(version=...)` instead.
 
+### Labels
+
+A label is a named pointer to a version, per prompt. Fetch by label so your app
+doesn't hard-code a version number.
+
+```python
+store.set_label("chatbot", "production", 2)
+store.set_label("chatbot", "staging", 3)
+
+store.get("chatbot", label="production")  # version 2
+store.render("greeter", label="production", name="Ada", company="Acme")
+store.labels("chatbot")  # {'production': 2, 'staging': 3}
+
+store.set_label("chatbot", "production", 3)  # promote
+store.set_label("chatbot", "production", 1)  # roll back
+```
+
+Moving a label never changes any version. `version` and `label` can't be used
+together (`ValueError`), an unknown label raises `LabelNotFound`, and pointing a
+label at a version that doesn't exist raises `VersionNotFound`. Labels live in
+`_labels.yaml` next to the versions. Like `version`, a template variable called
+`label` can't be passed to `store.render`; use `store.get(...).render(...)`.
+
 ## Rules
 
 - **Names** use lowercase letters, digits, `-` and `_`, and start with a letter or
@@ -86,7 +109,8 @@ prompt.render(name="Ada", company="Acme")  # same as store.render(...)
   editing always creates the next version.
 - **Pin in production.** `get("chatbot")` returns the latest version, which is
   handy in development but changes behavior silently when someone saves a new one.
-  In production code, pin a version: `get("chatbot", version=2)`.
+  In production code, pin a version or a label:
+  `get("chatbot", version=2)` or `get("chatbot", label="production")`.
 
 ## Where files go
 
@@ -95,6 +119,7 @@ prompts/
   chatbot/
     v1.yaml
     v2.yaml
+    _labels.yaml
   summarizer/
     v1.yaml
 ```
@@ -130,6 +155,7 @@ All errors inherit from `PromptWhereError`.
 | `PromptNotFound` | No such prompt; suggests close matches ("did you mean …?"). |
 | `VersionNotFound` | The prompt exists but not that version; lists the available ones. |
 | `MissingVariables` | `render` was called without a variable the template uses; lists them. |
+| `LabelNotFound` | `get` or `render` was given a label the prompt doesn't have; lists existing ones. |
 | `VersionExists` | Something tried to overwrite a saved version. |
 | `LockTimeout` | Another process held the prompt's lock too long. |
 
@@ -141,7 +167,7 @@ conflict. This is documented, not solved.
 
 ## Status
 
-Under development. Not yet available: labels (`production` → version), optional
+Under development. Not yet available: optional
 Jinja2 templates and the `prompts` command line tool.
 
 ## Development

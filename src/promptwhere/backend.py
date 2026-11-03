@@ -26,3 +26,9 @@ class Backend(Protocol):
 
     def list_prompts(self) -> list[str]:
         """Return all prompt names, sorted."""
+
+    def get_labels(self, name: str) -> dict[str, int]:
+        """Return the label -> version map. Raises ``PromptNotFound``."""
+
+    def set_label(self, name: str, label: str, version: int) -> None:
+        """Point ``label`` at ``version`` (atomically). Callers hold ``lock(name)``."""

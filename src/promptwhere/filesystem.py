@@ -20,6 +20,7 @@ from .models import VersionRecord, validate_name
 
 _VERSION_FILE_RE = re.compile(r"v(\d+)\.yaml")
 _LOCK_FILE = "_lock"
+_LABELS_FILE = "_labels.yaml"
 _LOCK_POLL = 0.02
 LOCK_TIMEOUT = 10.0  # seconds to wait for another process before giving up
 
@@ -156,6 +157,30 @@ class FileSystemBackend:
             except InvalidPromptName:
                 continue  # not a prompt folder
         return sorted(names)
+
+    def get_labels(self, name: str) -> dict[str, int]:
+        directory = self._require_prompt(name)
+        path = directory / _LABELS_FILE
+        if not path.is_file():
+            return {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return {str(label): int(version) for label, version in data.items()}
+
+    def set_label(self, name: str, label: str, version: int) -> None:
+        labels = self.get_labels(name)
+        labels[label] = version
+        target = self._prompt_dir(name) / _LABELS_FILE
+        text = yaml.dump(labels, Dumper=_Dumper, sort_keys=True, allow_unicode=True)
+        fd, tmp_name = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, target)  # labels are movable pointers, so replacing is intended
+        finally:
+            tmp.unlink(missing_ok=True)
 
     @staticmethod
     def _read(path: Path) -> VersionRecord:
