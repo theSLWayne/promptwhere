@@ -1,0 +1,73 @@
+name: Release
+
+# Runs when a PR is merged to main (a merge is a push to main).
+# Publishes only if the version in pyproject.toml is not already on PyPI.
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      new: ${{ steps.check.outputs.new }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check if version is already on PyPI
+        id: check
+        run: |
+          python - <<'EOF'
+          import os, tomllib, urllib.request, urllib.error
+          with open("pyproject.toml", "rb") as f:
+              v = tomllib.load(f)["project"]["version"]
+          try:
+              urllib.request.urlopen(f"https://pypi.org/pypi/promptwhere/{v}/json")
+              new = "false"
+          except urllib.error.HTTPError as e:
+              if e.code != 404:
+                  raise
+              new = "true"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"new={new}\nversion={v}\n")
+          print(f"version {v}: publish={new}")
+          EOF
+      - if: steps.check.outputs.new == 'true'
+        run: pip install build twine
+      - if: steps.check.outputs.new == 'true'
+        run: python -m build
+      - if: steps.check.outputs.new == 'true'
+        run: twine check dist/*
+      - if: steps.check.outputs.new == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    if: needs.build.outputs.new == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # PyPI Trusted Publishing
+      contents: write   # create the git tag and GitHub Release
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Tag and create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "v$VERSION" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "v$VERSION" \
+            --generate-notes
