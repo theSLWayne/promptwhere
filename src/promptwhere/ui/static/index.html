@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>promptwhere</title>
+<style>
+  :root {
+    --bg: #fafafa; --panel: #fff; --text: #1c1c1e; --muted: #6b6b73; --line: #e2e2e6;
+    --accent: #3b5bdb; --add: #e6f6ea; --del: #fdeaea; --err: #c92a2a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151517; --panel: #1e1e21; --text: #ececee; --muted: #9a9aa3; --line: #33333a;
+      --accent: #8da2ff; --add: #1d3324; --del: #3a2020; --err: #ff8787;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+  .app { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+  aside { border-right: 1px solid var(--line); background: var(--panel); padding: 12px; }
+  aside h1 { font-size: 15px; margin: 0 0 4px; }
+  .note { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+  input, select, button { font: inherit; color: inherit; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  input[type=search] { width: 100%; margin-bottom: 8px; }
+  button { cursor: pointer; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  .names li { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+  .names li:hover { background: var(--bg); }
+  .names li.active { background: var(--accent); color: #fff; }
+  main { padding: 20px 24px; min-width: 0; max-width: 960px; }
+  h2 { margin: 0 0 8px; font-size: 20px; }
+  h3 { margin: 24px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); }
+  .chip { display: inline-block; padding: 1px 8px; margin: 0 4px 4px 0; border-radius: 99px;
+    border: 1px solid var(--line); font-size: 12px; background: var(--panel); }
+  .chip.label { border-color: var(--accent); color: var(--accent); cursor: pointer; }
+  .versions li { display: flex; gap: 12px; align-items: baseline; padding: 6px 10px;
+    border: 1px solid var(--line); border-radius: 6px; margin-bottom: 4px; background: var(--panel);
+    cursor: pointer; }
+  .versions li.active { border-color: var(--accent); }
+  .versions .when, .versions .msg { color: var(--muted); font-size: 12px; }
+  pre { margin: 0; padding: 12px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; white-space: pre-wrap; word-break: break-word;
+    font: 13px/1.5 ui-monospace, Consolas, monospace; }
+  pre .add { background: var(--add); display: block; }
+  pre .del { background: var(--del); display: block; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .row label { color: var(--muted); font-size: 12px; }
+  .error { color: var(--err); margin: 6px 0; }
+  .empty { color: var(--muted); }
+  @media (max-width: 640px) {
+    .app { grid-template-columns: 1fr; }
+    aside { border-right: 0; border-bottom: 1px solid var(--line); }
+    main { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <h1>promptwhere</h1>
+    <p class="note">Read-only view. Versions never change; to edit, use <code>prompts edit</code>.</p>
+    <input type="search" id="search" placeholder="Search prompts" aria-label="Search prompts">
+    <ul class="names" id="names"></ul>
+  </aside>
+  <main id="main"><p class="empty">Select a prompt.</p></main>
+</div>
+<script>
+const token = new URLSearchParams(location.search).get('token') || '';
+const state = { names: [], name: null, detail: null, shown: null };
+
+function el(tag, attrs, ...kids) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === 'class') node.className = v;
+    else if (k.startsWith('on')) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const kid of kids) node.append(kid);
+  return node;
+}
+
+async function api(path, params) {
+  const query = params ? '?' + new URLSearchParams(params) : '';
+  const response = await fetch('/api' + path + query, { headers: { 'X-Token': token } });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+
+const show = (e) => { document.getElementById('main').replaceChildren(...e); };
+const showError = (e) => show([el('p', { class: 'error' }, e.message)]);
+const encoded = (name) => '/prompts/' + encodeURIComponent(name);
+
+function renderNames() {
+  const needle = document.getElementById('search').value.toLowerCase();
+  const items = state.names.filter((n) => n.includes(needle)).map((n) =>
+    el('li', { class: n === state.name ? 'active' : '', onclick: () => openPrompt(n) }, n));
+  document.getElementById('names').replaceChildren(...items);
+}
+
+async function openPrompt(name) {
+  try {
+    state.name = name;
+    state.detail = await api(encoded(name));
+    const latest = state.detail.versions[state.detail.versions.length - 1];
+    renderNames();
+    await openVersion(latest.version);
+  } catch (e) { showError(e); }
+}
+
+async function openVersion(version) {
+  try {
+    state.shown = await api(encoded(state.name) + '/get', { version });
+    renderPrompt();
+  } catch (e) { showError(e); }
+}
+
+function renderPrompt() {
+  const { name, versions, labels } = state.detail;
+  const shown = state.shown;
+  const labelsFor = (v) => Object.entries(labels).filter(([, n]) => n === v).map(([l]) => l);
+
+  const labelChips = Object.entries(labels).map(([l, v]) =>
+    el('span', { class: 'chip label', title: 'Show this version', onclick: () => openVersion(v) }, `${l} → v${v}`));
+
+  const timeline = el('ul', { class: 'versions' }, ...[...versions].reverse().map((p) =>
+    el('li', { class: p.version === shown.version ? 'active' : '', onclick: () => openVersion(p.version) },
+      el('strong', {}, 'v' + p.version),
+      el('span', { class: 'when' }, new Date(p.created_at).toLocaleString()),
+      el('span', { class: 'msg' }, p.message || ''),
+      el('span', {}, ...labelsFor(p.version).map((l) => el('span', { class: 'chip label' }, l))))));
+
+  const metaKeys = Object.keys(shown.metadata);
+  const metadata = metaKeys.length
+    ? el('pre', {}, JSON.stringify(shown.metadata, null, 2))
+    : el('p', { class: 'empty' }, 'No metadata.');
+
+  show([
+    el('h2', {}, name),
+    el('div', {}, ...(labelChips.length ? labelChips : [el('span', { class: 'empty' }, 'No labels.')])),
+    el('h3', {}, `Version ${shown.version}`),
+    el('pre', {}, shown.template),
+    el('div', { style: 'margin-top:8px' }, ...shown.variables.map((v) => el('span', { class: 'chip' }, '{' + v + '}'))),
+    el('h3', {}, 'Details'),
+    metadata,
+    el('h3', {}, 'Versions'),
+    timeline,
+    diffSection(versions),
+    renderSection(shown),
+  ]);
+}
+
+function versionSelect(versions, selected) {
+  return el('select', {}, ...versions.map((p) => {
+    const o = el('option', { value: p.version }, 'v' + p.version);
+    if (p.version === selected) o.selected = true;
+    return o;
+  }));
+}
+
+function diffSection(versions) {
+  const last = versions[versions.length - 1].version;
+  const a = versionSelect(versions, Math.max(1, last - 1));
+  const b = versionSelect(versions, last);
+  const out = el('div', {});
+  const go = async () => {
+    try {
+      const { diff } = await api(encoded(state.name) + '/diff', { a: a.value, b: b.value });
+      const lines = diff ? diff.split('\n').map((line) => {
+        const cls = line.startsWith('+') && !line.startsWith('+++') ? 'add'
+          : line.startsWith('-') && !line.startsWith('---') ? 'del' : '';
+        return el('span', { class: cls }, line || ' ');
+      }) : [document.createTextNode('No differences.')];
+      out.replaceChildren(el('pre', {}, ...lines));
+    } catch (e) { out.replaceChildren(el('p', { class: 'error' }, e.message)); }
+  };
+  return el('div', {}, el('h3', {}, 'Diff'),
+    el('div', { class: 'row' }, a, el('span', {}, '→'), b, el('button', { onclick: go }, 'Compare')), out);
+}
+
+function renderSection(shown) {
+  const inputs = shown.variables.map((v) => [v, el('input', { type: 'text', placeholder: v })]);
+  const out = el('div', {});
+  const go = async () => {
+    const params = { version: shown.version };
+    for (const [v, input] of inputs) params['var.' + v] = input.value;
+    try {
+      const { text } = await api(encoded(state.name) + '/render', params);
+      out.replaceChildren(el('pre', {}, text));
+    } catch (e) { out.replaceChildren(el('p', { class: 'error' }, e.message)); }
+  };
+  if (!inputs.length) return el('div', {});
+  return el('div', {}, el('h3', {}, 'Render preview'),
+    el('div', { class: 'row' }, ...inputs.flatMap(([v, i]) => [el('label', {}, v), i]),
+      el('button', { onclick: go }, 'Render')), out);
+}
+
+document.getElementById('search').addEventListener('input', renderNames);
+api('/prompts').then((data) => {
+  state.names = data.prompts;
+  renderNames();
+  if (!state.names.length) show([el('p', { class: 'empty' }, 'No prompts yet. Create one in Python with PromptWhere().save(name, text).')]);
+}).catch(showError);
+</script>
+</body>
+</html>
