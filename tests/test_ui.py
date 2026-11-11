@@ -39,6 +39,7 @@ def request(
     *,
     token: str | None = "default",
     headers: dict[str, str] | None = None,
+    body: bytes | None = None,
 ) -> tuple[int, dict[str, str], bytes]:
     sent = dict(headers or {})
     if token == "default":
@@ -47,7 +48,7 @@ def request(
         sent.setdefault("X-Token", token)
     conn = http.client.HTTPConnection("127.0.0.1", srv.server_address[1])
     try:
-        conn.request(method, path, headers=sent)
+        conn.request(method, path, body=body, headers=sent)
         response = conn.getresponse()
         return response.status, dict(response.getheaders()), response.read()
     finally:
@@ -57,6 +58,25 @@ def request(
 def api(srv: _UIServer, path: str) -> tuple[int, Any]:
     status, _, body = request(srv, "/api" + path)
     return status, json.loads(body)
+
+
+def post(
+    srv: _UIServer,
+    path: str,
+    payload: Any,
+    *,
+    token: str | None = "default",
+    headers: dict[str, str] | None = None,
+    raw: bytes | None = None,
+) -> tuple[int, Any]:
+    sent = {
+        "Content-Type": "application/json",
+        "Origin": f"http://127.0.0.1:{srv.server_address[1]}",
+        **(headers or {}),
+    }
+    body = raw if raw is not None else json.dumps(payload).encode()
+    status, _, data = request(srv, "/api" + path, "POST", token=token, headers=sent, body=body)
+    return status, json.loads(data)
 
 
 def snapshot(root: Path) -> dict[str, bytes]:
@@ -107,10 +127,10 @@ def test_localhost_host_and_own_origin_are_accepted(server: _UIServer) -> None:
     assert status == 200
 
 
-@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
-def test_only_get_is_allowed(server: _UIServer, method: str) -> None:
+@pytest.mark.parametrize("method", ["PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+def test_only_get_and_post_are_allowed(server: _UIServer, method: str) -> None:
     status, headers, _ = request(server, "/api/prompts/chatbot", method)
-    assert status == 405 and headers["Allow"] == "GET"
+    assert status == 405 and headers["Allow"] == "GET, POST"
 
 
 def test_unknown_paths(server: _UIServer) -> None:
@@ -134,9 +154,143 @@ def test_no_request_changes_the_store(
         "/prompts/missing",
     ]:
         api(server, path)
-    for method in ["POST", "PUT", "DELETE", "PATCH"]:
+    for method in ["PUT", "DELETE", "PATCH"]:
         request(server, "/api/prompts/chatbot", method)
     assert snapshot(root) == before
+
+
+# --- writes (phase 7b) -----------------------------------------------------------------
+
+
+def test_new_prompt_creates_version_1(server: _UIServer, store: PromptWhere) -> None:
+    status, data = post(server, "/prompts", {"name": "fresh", "text": "Hi", "message": "first"})
+    assert status == 200 and data["version"] == 1 and data["created"] is True
+    saved = store.get("fresh")
+    assert (saved.template, saved.message) == ("Hi", "first")
+
+
+def test_new_prompt_with_existing_name_is_a_409(
+    server: _UIServer, store: PromptWhere, tmp_path: Path
+) -> None:
+    before = snapshot(tmp_path / "prompts")
+    status, data = post(server, "/prompts", {"name": "chatbot", "text": "other"})
+    assert status == 409 and "already exists" in data["error"]
+    assert snapshot(tmp_path / "prompts") == before
+
+
+def test_new_prompt_with_invalid_name_shows_library_message(server: _UIServer) -> None:
+    status, data = post(server, "/prompts", {"name": "../x", "text": "Hi"})
+    assert status == 400 and "name" in data["error"].lower()
+
+
+def test_new_version_never_touches_existing_files(
+    server: _UIServer, store: PromptWhere, tmp_path: Path
+) -> None:
+    before = snapshot(tmp_path / "prompts")
+    body = {"text": "Brand new {user}", "message": "third", "base_version": 2}
+    status, data = post(server, "/prompts/chatbot/versions", body)
+    assert status == 200 and data["version"] == 3 and data["created"] is True
+    after = snapshot(tmp_path / "prompts")
+    assert {k: v for k, v in after.items() if k in before} == before
+    assert sorted(set(after) - set(before)) == [str(Path("chatbot") / "v3.yaml")]
+    assert store.get("chatbot").message == "third"
+
+
+def test_new_version_carries_over_metadata(server: _UIServer, store: PromptWhere) -> None:
+    store.save("meta", "one", metadata={"model": "m1"})
+    post(server, "/prompts/meta/versions", {"text": "two", "base_version": 1})
+    assert store.get("meta").metadata == {"model": "m1"}
+
+
+def test_unchanged_text_creates_nothing(server: _UIServer, store: PromptWhere) -> None:
+    same = store.get("chatbot").template
+    status, data = post(server, "/prompts/chatbot/versions", {"text": same, "base_version": 2})
+    assert status == 200 and data["created"] is False and data["version"] == 2
+    assert len(store.history("chatbot")) == 2
+
+
+def test_stale_edit_is_blocked_then_forced(
+    server: _UIServer, store: PromptWhere, tmp_path: Path
+) -> None:
+    store.save("chatbot", "someone else was here")  # v3 while the editor started at v2
+    before = snapshot(tmp_path / "prompts")
+    body = {"text": "my edit", "base_version": 2}
+    status, data = post(server, "/prompts/chatbot/versions", body)
+    assert status == 409 and data["latest"]["version"] == 3
+    assert data["latest"]["template"] == "someone else was here"
+    assert snapshot(tmp_path / "prompts") == before
+    status, data = post(server, "/prompts/chatbot/versions", {**body, "force": True})
+    assert status == 200 and data["version"] == 4
+    assert store.get("chatbot", 3).template == "someone else was here"
+
+
+def test_new_version_of_missing_prompt_is_404(server: _UIServer) -> None:
+    status, data = post(server, "/prompts/chatbt/versions", {"text": "x", "base_version": 1})
+    assert status == 404 and "Did you mean 'chatbot'" in data["error"]
+
+
+def test_move_label_changes_no_version(
+    server: _UIServer, store: PromptWhere, tmp_path: Path
+) -> None:
+    root = tmp_path / "prompts"
+    before = snapshot(root)
+    status, data = post(server, "/prompts/chatbot/labels", {"label": "production", "version": 2})
+    assert status == 200 and data["labels"] == {"production": 2}
+    after = snapshot(root)
+    changed = {k for k in after if after[k] != before.get(k)}
+    assert changed == {str(Path("chatbot") / "_labels.yaml")}
+
+
+def test_move_label_to_missing_version_is_404(server: _UIServer) -> None:
+    body = {"label": "production", "version": 9}
+    assert post(server, "/prompts/chatbot/labels", body)[0] == 404
+
+
+@pytest.mark.parametrize(
+    "path, payload",
+    [
+        ("/prompts", {"name": "x"}),
+        ("/prompts", {"name": "x", "text": 5}),
+        ("/prompts/chatbot/versions", {"text": "x"}),
+        ("/prompts/chatbot/versions", {"text": "x", "base_version": "2"}),
+        ("/prompts/chatbot/labels", {"label": "a", "version": True}),
+        ("/prompts/chatbot/nope", {}),
+        ("/prompts/chatbot", {}),
+    ],
+)
+def test_bad_write_bodies_are_400(server: _UIServer, path: str, payload: dict[str, Any]) -> None:
+    assert post(server, path, payload)[0] == 400
+
+
+def test_writes_are_guarded(server: _UIServer, tmp_path: Path) -> None:
+    root = tmp_path / "prompts"
+    before = snapshot(root)
+    good = {"name": "evil", "text": "x"}
+    port = server.server_address[1]
+    assert post(server, "/prompts", good, token=None)[0] == 401
+    assert post(server, "/prompts", good, token="wrong")[0] == 401
+    assert post(server, "/prompts", good, headers={"Origin": "http://evil.example"})[0] == 403
+    assert (
+        post(server, "/prompts", good, headers={"Origin": f"http://127.0.0.1:{port + 1}"})[0] == 403
+    )
+    assert post(server, "/prompts", good, headers={"Content-Type": "text/plain"})[0] == 415
+    assert post(server, "/prompts", None, raw=b"{not json")[0] == 400
+    assert post(server, "/prompts", None, raw=b"[1, 2]")[0] == 400
+    assert post(server, "/prompts", None, raw=b"x", headers={"Content-Length": "1000001"})[0] == 413
+    assert snapshot(root) == before
+
+
+def test_write_without_origin_is_rejected(server: _UIServer, tmp_path: Path) -> None:
+    before = snapshot(tmp_path / "prompts")
+    status, _, _ = request(
+        server,
+        "/api/prompts",
+        "POST",
+        headers={"Content-Type": "application/json"},
+        body=b'{"name": "evil", "text": "x"}',
+    )
+    assert status == 403
+    assert snapshot(tmp_path / "prompts") == before
 
 
 # --- data matches the public API -------------------------------------------------------

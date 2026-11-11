@@ -1,7 +1,8 @@
-"""The UI server (phase 7a: read-only).
+"""The UI server (phase 7b: read and write).
 
 Uses only the standard library and the public ``PromptWhere`` API. It never
-touches files itself, and answers GET requests only.
+touches files itself. GET reads; POST on three endpoints saves a new prompt,
+saves a new version, or moves a label. Nothing updates or deletes a version.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import hmac
 import json
 import secrets
 import webbrowser
+from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -26,8 +28,34 @@ _HOST = "127.0.0.1"
 _TOKEN_HEADER = "X-Token"
 _VAR_PREFIX = "var."
 _NOT_FOUND = (PromptNotFound, VersionNotFound, LabelNotFound)
+_MAX_BODY = 1_000_000
 
 Query = dict[str, list[str]]
+Body = dict[str, Any]
+
+
+class _Conflict(Exception):
+    """A write that was refused because of the current state (HTTP 409)."""
+
+    def __init__(self, message: str, **extra: Any) -> None:
+        super().__init__(message)
+        self.extra = extra
+
+
+def _text_field(body: Body, key: str, *, required: bool = True) -> str | None:
+    value = body.get(key)
+    if value is None and not required:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"Field {key!r} must be a string in the request body.")  # noqa: TRY004
+    return value
+
+
+def _int_field(body: Body, key: str) -> int:
+    value = body.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"Field {key!r} must be a whole number in the request body.")  # noqa: TRY004
+    return value
 
 
 def _prompt_json(prompt: Prompt) -> dict[str, Any]:
@@ -59,6 +87,10 @@ def _required_int(query: Query, key: str) -> int:
     if number is None:
         raise ValueError(f"Missing query parameter {key!r}, e.g. ?{key}=1.")
     return number
+
+
+def _message(body: Body) -> str | None:
+    return _text_field(body, "message", required=False) or None
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -106,12 +138,53 @@ class _Handler(BaseHTTPRequestHandler):
     def _method_not_allowed(self) -> None:
         self._send(
             HTTPStatus.METHOD_NOT_ALLOWED,
-            json.dumps({"error": "The UI is read-only: only GET requests are allowed."}).encode(),
+            json.dumps(
+                {"error": "Only GET and POST are allowed. Versions can't be changed or deleted."}
+            ).encode(),
             "application/json; charset=utf-8",
-            Allow="GET",
+            Allow="GET, POST",
         )
 
-    do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_HEAD = _method_not_allowed
+    do_PUT = do_DELETE = do_PATCH = do_OPTIONS = do_HEAD = _method_not_allowed
+
+    def do_POST(self) -> None:
+        origin = self.headers.get("Origin")
+        if not self._host_and_origin_ok() or origin is None:
+            self._error(HTTPStatus.FORBIDDEN, "Writes need a matching Origin header.")
+            return
+        if not self.path.startswith("/api/"):
+            self._error(HTTPStatus.NOT_FOUND, "Not found.")
+            return
+        if not self._token_ok(self.headers.get(_TOKEN_HEADER)):
+            self._error(HTTPStatus.UNAUTHORIZED, f"Missing or wrong {_TOKEN_HEADER} header.")
+            return
+        if self.headers.get_content_type() != "application/json":
+            self._error(
+                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+                "Send the body as Content-Type: application/json.",
+            )
+            return
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            self._error(HTTPStatus.LENGTH_REQUIRED, "A Content-Length header is required.")
+            return
+        if length < 0 or length > _MAX_BODY:
+            self._error(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                f"The request body must be at most {_MAX_BODY} bytes.",
+            )
+            return
+        try:
+            body = json.loads(self.rfile.read(length))
+        except ValueError:
+            self._error(HTTPStatus.BAD_REQUEST, "The request body must be valid JSON.")
+            return
+        if not isinstance(body, dict):
+            self._error(HTTPStatus.BAD_REQUEST, "The request body must be a JSON object.")
+            return
+        segments = [unquote(s) for s in urlsplit(self.path).path.split("/")[2:]]
+        self._run(lambda: self._write(segments, body))
 
     def do_GET(self) -> None:
         if not self._host_and_origin_ok():
@@ -149,14 +222,49 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(HTTPStatus.UNAUTHORIZED, f"Missing or wrong {_TOKEN_HEADER} header.")
             return
         segments = [unquote(s) for s in path.split("/")[2:]]
+        self._run(lambda: self._route(segments, query))
+
+    def _run(self, action: Callable[[], dict[str, Any]]) -> None:
         try:
-            self._json(self._route(segments, query))
+            self._json(action())
         except _NOT_FOUND as error:
             self._error(HTTPStatus.NOT_FOUND, str(error))
+        except _Conflict as error:
+            self._json({"error": str(error), **error.extra}, HTTPStatus.CONFLICT)
         except (PromptWhereError, ValueError) as error:
             self._error(HTTPStatus.BAD_REQUEST, str(error))
         except (OSError, yaml.YAMLError) as error:
-            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not read the store: {error}")
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"Could not use the store: {error}")
+
+    def _write(self, segments: list[str], body: Body) -> dict[str, Any]:
+        store = self._ui.store
+        if segments == ["prompts"]:
+            name = cast("str", _text_field(body, "name"))
+            if name in store.list():
+                raise _Conflict(
+                    f"Prompt {name!r} already exists. Open it and save a new version instead."
+                )
+            saved = store.save(name, cast("str", _text_field(body, "text")), _message(body))
+            return {**_prompt_json(saved), "created": True}
+        if len(segments) == 3 and segments[0] == "prompts":
+            name = segments[1]
+            if segments[2] == "versions":
+                text = cast("str", _text_field(body, "text"))
+                base = _int_field(body, "base_version")
+                latest = store.history(name)[-1]
+                if base != latest.version and body.get("force") is not True:
+                    raise _Conflict(
+                        f"{name!r} changed: version {latest.version} was saved since you "
+                        f"started editing version {base}. Review it, then save anyway or reload.",
+                        latest=_prompt_json(latest),
+                    )
+                saved = store.save(name, text, _message(body), dict(latest.metadata))
+                return {**_prompt_json(saved), "created": saved.version != latest.version}
+            if segments[2] == "labels":
+                label = cast("str", _text_field(body, "label"))
+                store.set_label(name, label, _int_field(body, "version"))
+                return {"labels": store.labels(name)}
+        raise ValueError("Unknown API path. See docs/DESIGN.md, section UI.")
 
     def _route(self, segments: list[str], query: Query) -> dict[str, Any]:
         store = self._ui.store
@@ -211,7 +319,7 @@ def make_server(store: PromptWhere, port: int = 0) -> _UIServer:
 def serve(store: PromptWhere, port: int = 0, open_browser: bool = True) -> None:
     """Run the UI until interrupted with Ctrl+C."""
     server = make_server(store, port)
-    print(f"promptwhere UI (read-only): {server.url}\nPress Ctrl+C to stop.")
+    print(f"promptwhere UI:{server.url}\nPress Ctrl+C to stop.")
     if open_browser:
         webbrowser.open(server.url)
     try:
