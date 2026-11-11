@@ -43,6 +43,12 @@ def _build_parser() -> argparse.ArgumentParser:
     label.add_argument("name")
     label.add_argument("label")
     label.add_argument("version", type=int)
+
+    ui = commands.add_parser("ui", help="open the local read-only UI in your browser")
+    ui.add_argument(
+        "--port", type=int, default=0, help="port to listen on (default: any free port)"
+    )
+    ui.add_argument("--no-browser", action="store_true", help="print the URL but don't open it")
     return parser
 
 
@@ -78,6 +84,10 @@ def _run(args: argparse.Namespace) -> int:
     elif args.command == "label":
         store.set_label(args.name, args.label, args.version)
         print(f"{args.name}: {args.label} -> v{args.version}")
+    elif args.command == "ui":
+        from .ui.server import serve
+
+        serve(store, port=args.port, open_browser=not args.no_browser)
     return 0
 
 

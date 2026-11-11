@@ -21,6 +21,9 @@ prompts = "promptwhere.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"promptwhere.ui" = ["static/*.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

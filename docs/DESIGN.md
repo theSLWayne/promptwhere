@@ -17,10 +17,12 @@ and can always see and fetch every past version.
 
 Do not build these in v1. They make similar tools heavy.
 
-- Web UI or hosted server
+- Hosted server, remote access, or any UI reachable from another machine
 - User accounts or permissions
 - Evals, A/B testing, analytics
 - Integration with any specific LLM provider
+
+A **local-only UI** launched from the CLI (`prompts ui`) is allowed; see "UI".
 
 The backend interface and labels leave room to add some of these later.
 
@@ -198,9 +200,47 @@ prompts history chatbot
 prompts edit chatbot [-m "message"]   # opens latest in $EDITOR; saving creates next version
 prompts diff chatbot 2 3
 prompts label chatbot production 3
+prompts ui [--port N] [--no-browser]  # launches the local UI (see "UI")
 ```
 
 `edit` does nothing if the file is unchanged or empty after the editor closes.
+`ui` only starts the UI server for the selected `--path`; it has no other logic.
+
+---
+
+## UI
+
+A local, browser-based UI to see the prompts in a project. It follows every
+rule above: versions are immutable, labels are pointers, storage goes through
+the backend.
+
+- **Launch:** `prompts ui`. Python standard library only (`http.server`); no new
+  dependencies. Serves one bundled static HTML/JS page plus a small JSON API.
+- **Internal module:** `promptwhere.ui`, imported lazily by the CLI. It is *not*
+  part of the public API (no new export from `promptwhere`). Making it public is
+  a design change.
+- **Layering:** the server calls only the public `PromptWhere` API
+  (`list`, `history`, `get`, `diff`, `labels`, `render`). It never touches files.
+  The CLI command only starts it.
+- **Local only:**
+  - Binds to `127.0.0.1`.
+  - A random per-launch token is required in the URL.
+  - Host and Origin headers are checked (blocks DNS rebinding and cross-site requests).
+- **Screens:** prompt list with search; prompt view with version timeline, labels
+  and metadata; diff between two versions; render preview with variables.
+- **Errors:** library error messages are shown unchanged.
+
+### Phases
+
+- **7a (first release): read-only.** GET endpoints only; no endpoint can create
+  or change anything.
+- **7b: write path.** New prompt, new version (an "edit" is always a new
+  version, never in place), move label, and a warning if the latest version
+  changed since the edit began. There is still no update or delete of versions.
+- **7c: polish.** Variable highlighting, keyboard shortcuts.
+
+Out of scope for the UI, as for the library: accounts, hosting, evals, LLM
+playgrounds.
 
 ---
 
@@ -227,6 +267,7 @@ Implement one phase at a time, with tests, before starting the next.
 4. **Labels:** `set_label`, `labels`, `get(label=…)`.
 5. **CLI:** `list`, `show`, `history`, `edit`, `diff`, `label`.
 6. **Extras:** `diff` polish, optional Jinja2, additional backends.
+7. **UI** (see "UI"): 7a read-only viewer, 7b write path, 7c polish.
 
 ## Key behaviors to test
 
@@ -238,3 +279,10 @@ Implement one phase at a time, with tests, before starting the next.
 - Missing template variables raise `MissingVariables` naming them.
 - Moving a label does not change any version.
 - Invalid names (e.g. `../x`, empty, uppercase) are rejected.
+
+UI (phase 7a):
+
+- The UI server binds to loopback only.
+- Requests with a missing or wrong token, or a bad Host/Origin, are rejected.
+- Any non-GET request is rejected, and no UI request changes any file in the store.
+- The UI returns the same data as `list`, `history`, `get`, `diff`, `labels` and `render`.
