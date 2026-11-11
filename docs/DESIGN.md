@@ -220,12 +220,14 @@ the backend.
   part of the public API (no new export from `promptwhere`). Making it public is
   a design change.
 - **Layering:** the server calls only the public `PromptWhere` API
-  (`list`, `history`, `get`, `diff`, `labels`, `render`). It never touches files.
-  The CLI command only starts it.
+  (`list`, `history`, `get`, `diff`, `labels`, `render`, and from 7b `save` and
+  `set_label`). It never touches files. The CLI command only starts it.
 - **Local only:**
   - Binds to `127.0.0.1`.
   - A random per-launch token is required in the URL.
   - Host and Origin headers are checked (blocks DNS rebinding and cross-site requests).
+  - From 7b, write requests (POST) must also send an `Origin` header matching the
+    server, `Content-Type: application/json`, and a body of at most 1 MB.
 - **Screens:** prompt list with search; prompt view with version timeline, labels
   and metadata; diff between two versions; render preview with variables.
 - **Errors:** library error messages are shown unchanged.
@@ -237,6 +239,18 @@ the backend.
 - **7b: write path.** New prompt, new version (an "edit" is always a new
   version, never in place), move label, and a warning if the latest version
   changed since the edit began. There is still no update or delete of versions.
+  Forms cover template and message only; a new version carries over the latest
+  version's metadata. Endpoints (all POST, JSON in and out):
+  - `/api/prompts` `{name, text, message?}`: new prompt; 409 if the name exists.
+  - `/api/prompts/<name>/versions` `{text, message?, base_version, force?}`: calls
+    `save`. If `base_version` is not the latest version, nothing is saved and the
+    reply is 409 with the current latest version; resending with `force: true`
+    saves anyway. Returns `created: false` when the text is unchanged.
+  - `/api/prompts/<name>/labels` `{label, version}`: calls `set_label`.
+
+  No public API is added: the server does the `base_version` check itself with
+  `history()`. The check and the save are not atomic, so it is a warning, not a
+  lock; versions stay safe because `save` holds the backend lock.
 - **7c: polish.** Variable highlighting, keyboard shortcuts.
 
 Out of scope for the UI, as for the library: accounts, hosting, evals, LLM
@@ -286,3 +300,12 @@ UI (phase 7a):
 - Requests with a missing or wrong token, or a bad Host/Origin, are rejected.
 - Any non-GET request is rejected, and no UI request changes any file in the store.
 - The UI returns the same data as `list`, `history`, `get`, `diff`, `labels` and `render`.
+
+UI (phase 7b):
+
+- Only POST on the three write endpoints changes anything; PUT, PATCH and DELETE are rejected.
+- Writes are rejected without a valid token, matching Origin, JSON content type or a small valid body, and then change nothing.
+- A new prompt creates version 1; an existing name is a 409.
+- A new version never modifies existing version files.
+- A stale `base_version` gives a 409 with the latest version and saves nothing; `force` saves.
+- Moving a label through the UI changes no version file.

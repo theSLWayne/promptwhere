@@ -24,6 +24,9 @@
   input, select, button { font: inherit; color: inherit; background: var(--panel);
     border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
   input[type=search] { width: 100%; margin-bottom: 8px; }
+  textarea { width: 100%; display: block; margin-bottom: 8px; font: 13px/1.5 ui-monospace, Consolas, monospace;
+    color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+  .warn { border: 1px solid var(--err); border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
   button { cursor: pointer; }
   ul { list-style: none; margin: 0; padding: 0; }
   .names li { padding: 6px 8px; border-radius: 6px; cursor: pointer; }
@@ -61,7 +64,8 @@
 <div class="app">
   <aside>
     <h1>promptwhere</h1>
-    <p class="note">Read-only view. Versions never change; to edit, use <code>prompts edit</code>.</p>
+    <p class="note">Versions never change: an edit always saves a new version.</p>
+    <button id="new" style="width:100%;margin-bottom:8px">New prompt</button>
     <input type="search" id="search" placeholder="Search prompts" aria-label="Search prompts">
     <ul class="names" id="names"></ul>
   </aside>
@@ -87,6 +91,22 @@ async function api(path, params) {
   const response = await fetch('/api' + path + query, { headers: { 'X-Token': token } });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+
+async function post(path, body) {
+  const response = await fetch('/api' + path, {
+    method: 'POST',
+    headers: { 'X-Token': token, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    const error = new Error(data.error || response.statusText);
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
   return data;
 }
 
@@ -141,6 +161,8 @@ function renderPrompt() {
   show([
     el('h2', {}, name),
     el('div', {}, ...(labelChips.length ? labelChips : [el('span', { class: 'empty' }, 'No labels.')])),
+    labelSection(versions, shown),
+    el('div', { class: 'row' }, el('button', { onclick: editForm }, 'Edit as new version')),
     el('h3', {}, `Version ${shown.version}`),
     el('pre', {}, shown.template),
     el('div', { style: 'margin-top:8px' }, ...shown.variables.map((v) => el('span', { class: 'chip' }, '{' + v + '}'))),
@@ -150,6 +172,74 @@ function renderPrompt() {
     timeline,
     diffSection(versions),
     renderSection(shown),
+  ]);
+}
+
+function labelSection(versions, shown) {
+  const label = el('input', { type: 'text', placeholder: 'label, e.g. production' });
+  const target = versionSelect(versions, shown.version);
+  const out = el('span', { class: 'error' });
+  const go = async () => {
+    try {
+      await post(encoded(state.name) + '/labels', { label: label.value, version: Number(target.value) });
+      await openPrompt(state.name);
+    } catch (e) { out.textContent = e.message; }
+  };
+  return el('div', { class: 'row' }, label, el('span', {}, '→'), target, el('button', { onclick: go }, 'Set label'), out);
+}
+
+function editForm() {
+  const base = state.detail.versions[state.detail.versions.length - 1].version;
+  const text = el('textarea', { rows: '12', 'aria-label': 'Prompt text' });
+  text.value = state.shown.template;
+  const message = el('input', { type: 'text', placeholder: 'Message (optional)', style: 'width:100%;margin-bottom:8px' });
+  const out = el('div', {});
+  const submit = async (force) => {
+    try {
+      await post(encoded(state.name) + '/versions',
+        { text: text.value, message: message.value, base_version: base, force });
+      await openPrompt(state.name);
+    } catch (e) {
+      if (e.status === 409 && e.data.latest) {
+        out.replaceChildren(
+          el('div', { class: 'warn' }, e.message),
+          el('h3', {}, `Current latest: version ${e.data.latest.version}`),
+          el('pre', {}, e.data.latest.template),
+          el('div', { class: 'row', style: 'margin-top:8px' },
+            el('button', { onclick: () => submit(true) }, 'Save anyway'),
+            el('button', { onclick: () => openPrompt(state.name) }, 'Reload latest')));
+      } else out.replaceChildren(el('p', { class: 'error' }, e.message));
+    }
+  };
+  show([
+    el('h2', {}, `Edit ${state.name}`),
+    el('p', { class: 'note' }, `Starts from version ${state.shown.version}. Saving creates a new version.`),
+    text, message,
+    el('div', { class: 'row' },
+      el('button', { onclick: () => submit(false) }, 'Save new version'),
+      el('button', { onclick: () => openVersion(state.shown.version) }, 'Cancel')),
+    out,
+  ]);
+}
+
+function newPromptForm() {
+  const name = el('input', { type: 'text', placeholder: 'prompt-name', 'aria-label': 'Prompt name' });
+  const text = el('textarea', { rows: '12', placeholder: 'Prompt text', 'aria-label': 'Prompt text' });
+  const message = el('input', { type: 'text', placeholder: 'Message (optional)', style: 'width:100%;margin-bottom:8px' });
+  const out = el('div', {});
+  const save = async () => {
+    try {
+      const saved = await post('/prompts', { name: name.value, text: text.value, message: message.value });
+      state.names = (await api('/prompts')).prompts;
+      await openPrompt(saved.name);
+    } catch (e) { out.replaceChildren(el('p', { class: 'error' }, e.message)); }
+  };
+  show([
+    el('h2', {}, 'New prompt'),
+    el('p', { class: 'note' }, 'Lowercase letters, digits, - and _.'),
+    el('div', { class: 'row' }, name), text, message,
+    el('div', { class: 'row' }, el('button', { onclick: save }, 'Create')),
+    out,
   ]);
 }
 
@@ -199,10 +289,11 @@ function renderSection(shown) {
 }
 
 document.getElementById('search').addEventListener('input', renderNames);
+document.getElementById('new').addEventListener('click', newPromptForm);
 api('/prompts').then((data) => {
   state.names = data.prompts;
   renderNames();
-  if (!state.names.length) show([el('p', { class: 'empty' }, 'No prompts yet. Create one in Python with PromptWhere().save(name, text).')]);
+  if (!state.names.length) show([el('p', { class: 'empty' }, 'No prompts yet. Click "New prompt" to create one.')]);
 }).catch(showError);
 </script>
 </body>

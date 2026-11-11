@@ -44,7 +44,7 @@ def _build_parser() -> argparse.ArgumentParser:
     label.add_argument("label")
     label.add_argument("version", type=int)
 
-    ui = commands.add_parser("ui", help="open the local read-only UI in your browser")
+    ui = commands.add_parser("ui", help="open the local UI in your browser")
     ui.add_argument(
         "--port", type=int, default=0, help="port to listen on (default: any free port)"
     )
