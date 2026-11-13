@@ -120,11 +120,42 @@ prompts history chatbot
 prompts edit chatbot [-m "message"]   # opens the latest version in $VISUAL / $EDITOR
 prompts diff chatbot 2 3
 prompts label chatbot production 3
+prompts ui [--port N] [--no-browser]  # local browser UI, see below
 ```
 
 `edit` saves the result as the next version. If the text is unchanged or empty
 after the editor closes, nothing is saved. Errors print as `error: …` and exit
 with code 1.
+
+## Local UI
+
+Prefer a browser to the terminal? Run:
+
+```bash
+prompts ui
+```
+
+This starts a small server for the selected store (`--path DIR` works here too)
+and opens it in your browser. It uses only the standard library, so there is
+nothing extra to install. Use `--port N` to pick a port (default: any free one)
+and `--no-browser` to just print the URL.
+
+What you can do:
+
+- **Browse** the prompt list, with search.
+- **Inspect** a prompt: version timeline, labels and metadata.
+- **Compare** any two versions in a diff.
+- **Preview** a render by filling in the template variables.
+- **Write:** create a new prompt, save a new version, or move a label. Editing
+  always saves a *new* version; existing versions are never changed, and there
+  is no way to delete anything. If someone saved a newer version while you were
+  editing, the UI warns you and lets you save anyway. New versions keep the
+  latest version's metadata; the forms cover template and message only.
+
+The UI is local-only: it listens on `127.0.0.1`, and the URL contains a random
+token that changes on every launch, so open the exact URL it prints. Requests
+with a wrong token, Host or Origin are rejected. It is a viewer and editor for
+your local files, not a hosted service, and it has no accounts.
 
 ## Rules
 
@@ -192,7 +223,8 @@ conflict. This is documented, not solved.
 
 ## Status
 
-Under development. Not yet available: optional Jinja2 templates.
+Under development. Not yet available: optional Jinja2 templates. The UI is
+internal to the `prompts ui` command and is not part of the Python API.
 
 ## Development
 
