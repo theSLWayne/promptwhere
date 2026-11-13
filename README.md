@@ -1,7 +1,31 @@
 # promptwhere
 
-Named, versioned prompts for Python, stored as plain YAML files in your project.
-No server, no database, no setup.
+**Your prompts deserve the same care as your code.**
+
+Prompts are some of the most important text in an AI app, yet they often end up
+pasted into strings, scattered across files, or lost when someone "just tweaks
+one line". promptwhere gives each prompt a name and remembers every version of
+it, so you always know what changed, when, and why, and can go back to any
+earlier version.
+
+## Philosophy
+
+- **Simple first.** Save a prompt with one call. No server, no database, no
+  accounts, no setup. You can learn the whole library in about a minute.
+- **Your files, your repo.** Prompts are plain YAML files in your project. You
+  can read them, review them in a pull request, and ship them with your app.
+- **History you can trust.** Editing never overwrites anything. Every change
+  becomes a new version, and old versions stay exactly as they were.
+- **Safe to run in production.** Point a label like `production` at a version,
+  promote it when you're ready, and roll back just as easily.
+
+## Prefer to click? There's a UI
+
+Run `prompts ui` and manage your prompts in the browser. See all your prompts at
+a glance, browse each one's version history, compare any two versions
+side by side, preview a prompt with its variables filled in, and add new prompts,
+edit existing ones or move labels, all without touching a file. It runs on your
+own machine, so there is nothing to host. See [Local UI](#local-ui).
 
 ```bash
 pip install promptwhere
